@@ -8,6 +8,7 @@
 #include <Fonts/FreeSans9pt7b.h>
 #include <Wire.h>
 #include <driver/i2s.h>
+#include <driver/rtc_io.h>
 #include <math.h>
 
 // ============================================================
@@ -650,6 +651,10 @@ void setup() {
   bootCount++;
   Serial.printf("\n=== BOOT #%d (Waveshare ESP32-S3-ePaper-1.54) ===\n", bootCount);
 
+  // GPIO Hold freigeben (war für Deep Sleep gesetzt)
+  rtc_gpio_hold_dis(GPIO_NUM_0);
+  rtc_gpio_hold_dis(GPIO_NUM_18);
+
   // Buttons: active LOW (Pull-up, geht LOW beim Drücken) – offizielles Waveshare BSP
   pinMode(BOOT_BTN, INPUT_PULLUP);
   pinMode(PWR_BTN, INPUT_PULLUP);
@@ -739,10 +744,19 @@ void setup() {
   display.hibernate();
   displayPowerOff();
 
-  // PWR_BTN (GPIO18) für Wakeup – GPIO0 (BOOT) ist Strapping-Pin, nicht für Deep-Sleep-Wakeup geeignet!
-  Serial.printf("EXT1 wakeup: GPIO%d (PWR) mit ALL_LOW\n", PWR_BTN);
+  // RTC Pull-ups aktivieren und GPIO-Zustand halten (sonst floaten Pins im Deep Sleep → kein Wakeup)
+  // Offizielles Waveshare-Beispiel verwendet GPIO0 + GPIO18 mit ANY_LOW (Wert 2)
+  rtc_gpio_pullup_en(GPIO_NUM_0);
+  rtc_gpio_pulldown_dis(GPIO_NUM_0);
+  rtc_gpio_hold_en(GPIO_NUM_0);
+  rtc_gpio_pullup_en(GPIO_NUM_18);
+  rtc_gpio_pulldown_dis(GPIO_NUM_18);
+  rtc_gpio_hold_en(GPIO_NUM_18);
+
+  uint64_t wakeupMask = (1ULL << BOOT_BTN) | (1ULL << PWR_BTN);
+  esp_sleep_enable_ext1_wakeup(wakeupMask, (esp_sleep_ext1_wakeup_mode_t)2); // ANY_LOW
+  Serial.printf("EXT1 wakeup: GPIO%d+GPIO%d mit ANY_LOW\n", BOOT_BTN, PWR_BTN);
   Serial.flush();
-  esp_sleep_enable_ext1_wakeup(1ULL << PWR_BTN, ESP_EXT1_WAKEUP_ALL_LOW);
   esp_sleep_enable_timer_wakeup(SCAN_INTERVAL_US);
   delay(100);
   esp_deep_sleep_start();
