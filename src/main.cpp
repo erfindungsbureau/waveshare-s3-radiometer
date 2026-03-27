@@ -27,8 +27,8 @@
 #define BOOT_BTN  0   // BOOT-Taste (wakeup-fähig)
 #define PWR_BTN   18  // PWR-Taste (wakeup-fähig)
 
-// Built-in LED (GPIO2 für ESP32-S3 DevKitC-1 v1.0 – anpassen falls nötig)
-#define LED_PIN   2
+// Built-in LED (GPIO3, active LOW – Waveshare ESP32-S3-ePaper-1.54 offizielles Schematic)
+#define LED_PIN   3
 
 // Batterie ADC
 #define BATT_ADC  4   // GPIO4 = ADC1_CH3, Spannungsteiler 2:1
@@ -81,9 +81,9 @@ bool isScanning = false;
 // ============================================================
 void blinkLED() {
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);
+  digitalWrite(LED_PIN, LOW);   // Active LOW: LOW = an
   delay(50);
-  digitalWrite(LED_PIN, LOW);
+  digitalWrite(LED_PIN, HIGH);  // HIGH = aus
 }
 
 // ============================================================
