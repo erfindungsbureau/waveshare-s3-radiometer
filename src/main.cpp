@@ -472,6 +472,57 @@ String formatTime(int minutes) {
 }
 
 // ============================================================
+// ============================================================
+// Scanning-Screen (nur beim manuellen Scan via PWR-Button)
+// ============================================================
+void showScanningScreen(int wifiCount, int bleCount, bool scanDone) {
+  display.setRotation(0);
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+
+    // "SCANNING" gross oben
+    display.setFont(&FreeSansBold9pt7b);
+    display.setTextSize(2);
+    display.setCursor(10, 40);
+    display.print(scanDone ? "RESULTS" : "SCANNING");
+
+    // Trennlinie
+    display.drawLine(0, 50, 200, 50, GxEPD_BLACK);
+
+    // WiFi Anzahl
+    display.setTextSize(1);
+    display.setFont(&FreeSansBold9pt7b);
+    display.setCursor(10, 90);
+    display.print("WiFi:");
+    display.setTextSize(3);
+    display.setCursor(80, 95);
+    display.print(wifiCount);
+
+    // BLE Anzahl
+    display.setTextSize(1);
+    display.setFont(&FreeSansBold9pt7b);
+    display.setCursor(10, 140);
+    display.print("BLE:");
+    display.setTextSize(3);
+    display.setCursor(80, 145);
+    display.print(bleCount);
+
+    // Total
+    display.setTextSize(1);
+    display.drawLine(0, 160, 200, 160, GxEPD_BLACK);
+    display.setCursor(10, 185);
+    display.print("TOTAL: ");
+    display.setTextSize(2);
+    display.setCursor(90, 185);
+    display.print(wifiCount + bleCount);
+
+  } while (display.nextPage());
+}
+
+// ============================================================
 // Display aktualisieren
 // ============================================================
 void updateDisplay(ScanData current, Statistics hour, Statistics day, Statistics week, bool fullRefresh = false) {
@@ -609,15 +660,11 @@ void setup() {
 
   if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1) {
     blinkLED();  // Sofortiges visuelles Feedback beim Button-Druck
-    uint64_t mask = esp_sleep_get_ext1_wakeup_status();
-    Serial.printf("Button-Wakeup (Maske: 0x%llX)\n", mask);
-    if (mask & (1ULL << BOOT_BTN)) {
-      // BOOT-Taste: manueller Scan + Geigerzähler-Audio
-      isManualScan = true;
-      playGeiger   = true;
-      Serial.println("BOOT-Taste: manueller Scan + Audio");
-    }
-    // PWR-Taste: weckt das Gerät auf, kein besonderer Scan
+    // PWR_BTN (GPIO18) ist der korrekte Wakeup-Pin.
+    // BOOT_BTN (GPIO0) ist Strapping-Pin – LOW beim Aufwachen → Bootloader-Modus → nie verwenden!
+    isManualScan = true;
+    playGeiger   = true;
+    Serial.println("PWR-Taste: manueller Scan + Audio");
   } else if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
     Serial.println("Timer-Wakeup");
   } else {
@@ -642,10 +689,22 @@ void setup() {
 
   bool needsFullRefresh = !isManualScan && ((bootCount == 1) || (scansUntilFullRefresh <= 1));
   isScanning = true;
-  updateDisplay(lastScan, hour, day, week, needsFullRefresh);
+
+  // Beim manuellen Scan: Scanning-Screen zeigen, dann scannen, dann Ergebnis
+  if (isManualScan) {
+    showScanningScreen(0, 0, false);
+  } else {
+    updateDisplay(lastScan, hour, day, week, needsFullRefresh);
+  }
 
   ScanData currentScan = performScan();
   lastScan = currentScan;
+
+  // Ergebnis kurz auf Scanning-Screen zeigen bevor Übersicht kommt
+  if (isManualScan) {
+    showScanningScreen(currentScan.wifiCount, currentScan.bleCount, true);
+    delay(3000);
+  }
 
   if (!isManualScan) {
     addToHistory(currentScan);
@@ -680,11 +739,10 @@ void setup() {
   display.hibernate();
   displayPowerOff();
 
-  // Buttons sind active LOW (Pull-up, geht LOW beim Drücken)
-  // ESP_EXT1_WAKEUP_ALL_LOW mit einzelnem Pin = "wecke wenn DIESER Pin LOW" → korrekt für active-LOW Button
-  // Beide Buttons separat konfigurieren: zweiter Aufruf ergänzt den ersten auf ESP32-S3
-  esp_sleep_enable_ext1_wakeup(1ULL << BOOT_BTN, ESP_EXT1_WAKEUP_ALL_LOW);
-  esp_sleep_enable_ext1_wakeup(1ULL << PWR_BTN,  ESP_EXT1_WAKEUP_ALL_LOW);
+  // PWR_BTN (GPIO18) für Wakeup – GPIO0 (BOOT) ist Strapping-Pin, nicht für Deep-Sleep-Wakeup geeignet!
+  Serial.printf("EXT1 wakeup: GPIO%d (PWR) mit ALL_LOW\n", PWR_BTN);
+  Serial.flush();
+  esp_sleep_enable_ext1_wakeup(1ULL << PWR_BTN, ESP_EXT1_WAKEUP_ALL_LOW);
   esp_sleep_enable_timer_wakeup(SCAN_INTERVAL_US);
   delay(100);
   esp_deep_sleep_start();
