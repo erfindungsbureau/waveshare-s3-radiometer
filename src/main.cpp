@@ -27,6 +27,9 @@
 #define BOOT_BTN  0   // BOOT-Taste (wakeup-fähig)
 #define PWR_BTN   18  // PWR-Taste (wakeup-fähig)
 
+// Built-in LED (GPIO2 für ESP32-S3 DevKitC-1 v1.0 – anpassen falls nötig)
+#define LED_PIN   2
+
 // Batterie ADC
 #define BATT_ADC  4   // GPIO4 = ADC1_CH3, Spannungsteiler 2:1
 
@@ -72,6 +75,16 @@ RTC_DATA_ATTR uint16_t bleHistory[SCANS_PER_DAY];
 
 String statusText = "Ready";
 bool isScanning = false;
+
+// ============================================================
+// LED
+// ============================================================
+void blinkLED() {
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+  delay(50);
+  digitalWrite(LED_PIN, LOW);
+}
 
 // ============================================================
 // Display Power
@@ -421,7 +434,8 @@ void setup() {
   // Display power on + SPI mit custom Pins initialisieren
   displayPowerOn();
   SPI.begin(EPD_SCK, -1, EPD_MOSI, EPD_CS);
-  display.init(115200, true, 10, false, SPI, SPISettings(4000000, MSBFIRST, SPI_MODE0));
+  // Nur beim ersten Boot hard-reset (bootCount==1), danach soft-init für partial refresh ohne Flackern
+  display.init(115200, bootCount == 1, 10, false, SPI, SPISettings(4000000, MSBFIRST, SPI_MODE0));
   delay(100);
   Serial.println("Display initialisiert");
 
@@ -453,6 +467,7 @@ void setup() {
   Serial.printf("7d:  %.1f%% (%s)\n", week.offlinePercent, formatTime(week.offlineMinutes).c_str());
 
   updateDisplay(currentScan, hour, day, week, false);
+  blinkLED();  // Kurzes Aufblinken zeigt: Gerät läuft, Display wurde aktualisiert
 
   if (!isManualScan) {
     if (--scansUntilFullRefresh <= 0) scansUntilFullRefresh = 6;
