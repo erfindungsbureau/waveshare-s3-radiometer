@@ -599,14 +599,16 @@ void setup() {
   bootCount++;
   Serial.printf("\n=== BOOT #%d (Waveshare ESP32-S3-ePaper-1.54) ===\n", bootCount);
 
-  pinMode(BOOT_BTN, INPUT);
-  pinMode(PWR_BTN, INPUT);
+  // Buttons: active LOW (Pull-up, geht LOW beim Drücken) – offizielles Waveshare BSP
+  pinMode(BOOT_BTN, INPUT_PULLUP);
+  pinMode(PWR_BTN, INPUT_PULLUP);
 
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
   bool isManualScan  = false;
   bool playGeiger    = false;
 
   if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1) {
+    blinkLED();  // Sofortiges visuelles Feedback beim Button-Druck
     uint64_t mask = esp_sleep_get_ext1_wakeup_status();
     Serial.printf("Button-Wakeup (Maske: 0x%llX)\n", mask);
     if (mask & (1ULL << BOOT_BTN)) {
@@ -678,7 +680,9 @@ void setup() {
   display.hibernate();
   displayPowerOff();
 
-  esp_sleep_enable_ext1_wakeup(BTN_PIN_MASK, ESP_EXT1_WAKEUP_ANY_HIGH);
+  // Buttons sind active LOW → ANY_LOW (Wert 2) verwenden
+  // ESP_EXT1_WAKEUP_ANY_LOW ist in älteren IDF-Versionen nicht definiert, Wert=2 korrekt für ESP32-S3
+  esp_sleep_enable_ext1_wakeup(BTN_PIN_MASK, (esp_sleep_ext1_wakeup_mode_t)2);
   esp_sleep_enable_timer_wakeup(SCAN_INTERVAL_US);
   delay(100);
   esp_deep_sleep_start();
