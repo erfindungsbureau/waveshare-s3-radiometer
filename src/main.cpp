@@ -497,7 +497,7 @@ void updateDisplay(ScanData current, Statistics hour, Statistics day, Statistics
     // Batterie (oben rechts, genug Abstand zu "RADIOMETER")
     float battVoltage = getBatteryVoltage();
     int battPercent = getBatteryPercent(battVoltage);
-    drawBattery(145, 8, battPercent, battVoltage);
+    drawBattery(145, 2, battPercent, battVoltage);
 
     display.drawLine(0, 22, 200, 22, GxEPD_BLACK);
 
