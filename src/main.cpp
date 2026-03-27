@@ -6,6 +6,9 @@
 #include <GxEPD2_BW.h>
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
+#include <Wire.h>
+#include <driver/i2s.h>
+#include <math.h>
 
 // ============================================================
 // Waveshare ESP32-S3-ePaper-1.54 Pin-Konfiguration
@@ -29,6 +32,18 @@
 
 // Built-in LED (GPIO3, active LOW – Waveshare ESP32-S3-ePaper-1.54 offizielles Schematic)
 #define LED_PIN   3
+
+// Audio – I2S Codec ES8311 (verifiziert aus offiziellem Waveshare-Repo)
+#define AUDIO_PWR_PIN   42   // active LOW (Verstärker-Enable)
+#define I2S_MCLK_PIN    14
+#define I2S_BCLK_PIN    15
+#define I2S_LRCLK_PIN   38
+#define I2S_DOUT_PIN    45
+#define I2C_SDA_PIN     47
+#define I2C_SCL_PIN     48
+#define ES8311_ADDR     0x18
+#define AUDIO_SAMPLE_RATE 16000
+#define I2S_PORT        I2S_NUM_0
 
 // Batterie ADC
 #define BATT_ADC  4   // GPIO4 = ADC1_CH3, Spannungsteiler 2:1
@@ -84,6 +99,173 @@ void blinkLED() {
   digitalWrite(LED_PIN, LOW);   // Active LOW: LOW = an
   delay(50);
   digitalWrite(LED_PIN, HIGH);  // HIGH = aus
+}
+
+// ============================================================
+// Audio (ES8311 I2S Codec, legacy driver/i2s.h API)
+// ============================================================
+void es8311_write(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(ES8311_ADDR);
+  Wire.write(reg);
+  Wire.write(val);
+  Wire.endTransmission();
+}
+
+bool audioInit() {
+  pinMode(AUDIO_PWR_PIN, OUTPUT);
+  digitalWrite(AUDIO_PWR_PIN, LOW);  // Verstärker einschalten (active LOW)
+  delay(50);
+
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+
+  // ES8311 Init-Sequenz (DAC-only, verifiziert aus Waveshare Beispielcode)
+  es8311_write(0x44, 0x08);  // noise gate off (2× für zuverlässigen ersten Boot)
+  es8311_write(0x44, 0x08);
+  es8311_write(0x01, 0x30);  // CLK Manager: MCLK enable
+  es8311_write(0x02, 0x00);  // pre_div=1, pre_multi=1
+  es8311_write(0x03, 0x10);  // ADC OSR=16
+  es8311_write(0x16, 0x24);  // MIC gain=0dB
+  es8311_write(0x04, 0x20);  // DAC OSR=32 (für 16 kHz)
+  es8311_write(0x05, 0x00);  // adc_div=1, dac_div=1
+  es8311_write(0x0B, 0x00);  // VMID on
+  es8311_write(0x0C, 0x00);  // analog bias on
+  es8311_write(0x10, 0x1F);  // headphone amp on
+  es8311_write(0x11, 0x7F);  // speaker/line-out on
+  es8311_write(0x00, 0x80);  // Codec on, Slave mode
+  es8311_write(0x01, 0x3F);  // MCLK-Quelle: externer MCLK-Pin
+  es8311_write(0x13, 0x10);  // analog LDO
+  es8311_write(0x1B, 0x0A);  // HPF
+  es8311_write(0x1C, 0x6A);  // HPF + Equalizer
+  es8311_write(0x44, 0x58);  // DAC-Referenz aktiv
+
+  // Takt: 16 kHz, MCLK=4.096 MHz (256×fs), 16-bit Philips I2S
+  // LRCLK-Teiler = 256  →  REG07/08 = 0x00/0xFF
+  // BCLK = 16000 × 16 × 2 = 512 kHz  →  MCLK/BCLK=8  →  bclk_div-1 = 7
+  es8311_write(0x07, 0x00);
+  es8311_write(0x08, 0xFF);
+  es8311_write(0x06, 0x07);
+
+  // Format: 16-bit Philips I2S; bit[6]=0 → DAC aktiv, ADC gemutet
+  es8311_write(0x09, 0x0C);        // DAC: 16-bit, Philips, aktiv
+  es8311_write(0x0A, 0x0C | 0x40); // ADC: 16-bit, Philips, gemutet
+
+  // DAC-Pfad aktivieren
+  es8311_write(0x0D, 0x01);
+  es8311_write(0x0E, 0x02);
+  es8311_write(0x12, 0x00);
+  es8311_write(0x14, 0x1A);
+  es8311_write(0x15, 0x40);
+  es8311_write(0x37, 0x08);
+  es8311_write(0x45, 0x00);
+  es8311_write(0x17, 0xBF);
+  es8311_write(0x32, 0xBF);  // DAC-Lautstärke ~75 %
+  delay(20);
+
+  // I2S-Treiber (legacy driver/i2s.h API – verfügbar im verwendeten Framework)
+  i2s_config_t i2s_cfg = {
+    .mode                 = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate          = AUDIO_SAMPLE_RATE,
+    .bits_per_sample      = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format       = I2S_CHANNEL_FMT_RIGHT_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags     = 0,
+    .dma_buf_count        = 4,
+    .dma_buf_len          = 256,
+    .use_apll             = false,
+    .tx_desc_auto_clear   = true,
+    .fixed_mclk           = 0,
+    .mclk_multiple        = I2S_MCLK_MULTIPLE_256,
+    .bits_per_chan         = I2S_BITS_PER_CHAN_DEFAULT,
+  };
+  if (i2s_driver_install(I2S_PORT, &i2s_cfg, 0, NULL) != ESP_OK) {
+    Serial.println("I2S: Driver install fehlgeschlagen");
+    return false;
+  }
+
+  i2s_pin_config_t pin_cfg = {
+    .mck_io_num   = I2S_MCLK_PIN,
+    .bck_io_num   = I2S_BCLK_PIN,
+    .ws_io_num    = I2S_LRCLK_PIN,
+    .data_out_num = I2S_DOUT_PIN,
+    .data_in_num  = I2S_PIN_NO_CHANGE,
+  };
+  if (i2s_set_pin(I2S_PORT, &pin_cfg) != ESP_OK) {
+    Serial.println("I2S: Pin config fehlgeschlagen");
+    i2s_driver_uninstall(I2S_PORT);
+    return false;
+  }
+  return true;
+}
+
+void audioShutdown() {
+  i2s_driver_uninstall(I2S_PORT);
+  Wire.end();
+  digitalWrite(AUDIO_PWR_PIN, HIGH);  // Verstärker ausschalten
+}
+
+// Geigerzähler-Simulation: deviceCount Klicks verteilt über 5 Sekunden
+void playGeigerClicks(int deviceCount) {
+  if (deviceCount == 0) return;
+  Serial.printf("Geiger-Audio: %d Gerät(e)\n", deviceCount);
+  if (!audioInit()) return;
+
+  // Klick-Buffer: 5 ms = 80 Samples @ 16 kHz, gedämpfte 3.2-kHz-Sinuswelle
+  const int CLICK_SAMPLES = 80;
+  int16_t clickBuf[CLICK_SAMPLES * 2];
+  for (int i = 0; i < CLICK_SAMPLES; i++) {
+    float t   = (float)i / AUDIO_SAMPLE_RATE;
+    float env = expf(-t * 500.0f);
+    int16_t s = (int16_t)(30000.0f * env * sinf(2.0f * M_PI * 3200.0f * t));
+    clickBuf[i * 2]     = s;
+    clickBuf[i * 2 + 1] = s;
+  }
+
+  // Stille: 10-ms-Chunks (160 Frames, zero-initialisiert)
+  const int CHUNK = 160;
+  static int16_t silence[CHUNK * 2];  // static → zero-initialisiert
+
+  // Klick-Zeitpunkte via Poisson-Prozess (exponentialverteilte Abstände)
+  const int TOTAL_MS    = 5000;
+  const int MAX_CLICKS  = min(deviceCount, 200);
+  float meanMs          = (float)TOTAL_MS / MAX_CLICKS;
+
+  int   clickPos[200];   // Klick-Positionen in Samples
+  int   nClicks = 0;
+  float cumMs   = 0.0f;
+  while (nClicks < MAX_CLICKS) {
+    float u = (float)((esp_random() & 0xFFFE) + 1) / 65536.0f;  // (0,1]
+    cumMs += -meanMs * logf(u);
+    if (cumMs >= TOTAL_MS) break;
+    clickPos[nClicks++] = (int)(cumMs * AUDIO_SAMPLE_RATE / 1000.0f);
+  }
+
+  // Wiedergabe: Stille in Chunks, Klick wenn fällig
+  const int totalSamples = TOTAL_MS * AUDIO_SAMPLE_RATE / 1000;
+  int curSample = 0, nextClick = 0;
+  size_t written;
+
+  while (curSample < totalSamples) {
+    if (nextClick < nClicks && clickPos[nextClick] < curSample + CHUNK) {
+      // Stille bis zum Klick schreiben
+      int before = clickPos[nextClick] - curSample;
+      if (before > 0) {
+        i2s_write(I2S_PORT, silence, before * 4, &written, portMAX_DELAY);
+        curSample += before;
+      }
+      // Klick ausgeben
+      i2s_write(I2S_PORT, clickBuf, sizeof(clickBuf), &written, portMAX_DELAY);
+      curSample += CLICK_SAMPLES;
+      nextClick++;
+    } else {
+      int remaining = totalSamples - curSample;
+      int chunk     = min(CHUNK, remaining);
+      i2s_write(I2S_PORT, silence, chunk * 4, &written, portMAX_DELAY);
+      curSample += chunk;
+    }
+  }
+
+  audioShutdown();
+  Serial.println("Geiger-Audio fertig");
 }
 
 // ============================================================
@@ -421,12 +603,19 @@ void setup() {
   pinMode(PWR_BTN, INPUT);
 
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  bool isManualScan = false;
+  bool isManualScan  = false;
+  bool playGeiger    = false;
 
   if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1) {
-    uint64_t wakeup_pin_mask = esp_sleep_get_ext1_wakeup_status();
-    Serial.printf("Button-Wakeup (Maske: 0x%llX)\n", wakeup_pin_mask);
-    isManualScan = true;
+    uint64_t mask = esp_sleep_get_ext1_wakeup_status();
+    Serial.printf("Button-Wakeup (Maske: 0x%llX)\n", mask);
+    if (mask & (1ULL << BOOT_BTN)) {
+      // BOOT-Taste: manueller Scan + Geigerzähler-Audio
+      isManualScan = true;
+      playGeiger   = true;
+      Serial.println("BOOT-Taste: manueller Scan + Audio");
+    }
+    // PWR-Taste: weckt das Gerät auf, kein besonderer Scan
   } else if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
     Serial.println("Timer-Wakeup");
   } else {
@@ -469,7 +658,12 @@ void setup() {
   Serial.printf("7d:  %.1f%% (%s)\n", week.offlinePercent, formatTime(week.offlineMinutes).c_str());
 
   updateDisplay(currentScan, hour, day, week, false);
-  blinkLED();  // Kurzes Aufblinken zeigt: Gerät läuft, Display wurde aktualisiert
+  blinkLED();
+
+  if (playGeiger) {
+    int totalDevices = currentScan.wifiCount + currentScan.bleCount;
+    playGeigerClicks(totalDevices);
+  }
 
   if (!isManualScan) {
     if (--scansUntilFullRefresh <= 0) scansUntilFullRefresh = 6;
