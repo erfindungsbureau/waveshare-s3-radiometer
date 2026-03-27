@@ -680,9 +680,11 @@ void setup() {
   display.hibernate();
   displayPowerOff();
 
-  // Buttons sind active LOW → ANY_LOW (Wert 2) verwenden
-  // ESP_EXT1_WAKEUP_ANY_LOW ist in älteren IDF-Versionen nicht definiert, Wert=2 korrekt für ESP32-S3
-  esp_sleep_enable_ext1_wakeup(BTN_PIN_MASK, (esp_sleep_ext1_wakeup_mode_t)2);
+  // Buttons sind active LOW (Pull-up, geht LOW beim Drücken)
+  // ESP_EXT1_WAKEUP_ALL_LOW mit einzelnem Pin = "wecke wenn DIESER Pin LOW" → korrekt für active-LOW Button
+  // Beide Buttons separat konfigurieren: zweiter Aufruf ergänzt den ersten auf ESP32-S3
+  esp_sleep_enable_ext1_wakeup(1ULL << BOOT_BTN, ESP_EXT1_WAKEUP_ALL_LOW);
+  esp_sleep_enable_ext1_wakeup(1ULL << PWR_BTN,  ESP_EXT1_WAKEUP_ALL_LOW);
   esp_sleep_enable_timer_wakeup(SCAN_INTERVAL_US);
   delay(100);
   esp_deep_sleep_start();
