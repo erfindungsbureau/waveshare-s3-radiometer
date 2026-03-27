@@ -253,9 +253,9 @@ void drawBattery(int x, int y, int percent, float voltage) {
   if (fillWidth > 0) display.fillRect(x + 1, y + 1, fillWidth, h - 2, GxEPD_BLACK);
   display.setFont(nullptr);
   display.setTextSize(1);
-  display.setCursor(x + w + 5, y + 2);
-  char voltageStr[6];
-  sprintf(voltageStr, "%.2fV", voltage);
+  display.setCursor(x + w + 3, y + 2);
+  char voltageStr[5];
+  sprintf(voltageStr, "%.1fV", voltage);
   display.print(voltageStr);
 }
 
@@ -312,10 +312,10 @@ void updateDisplay(ScanData current, Statistics hour, Statistics day, Statistics
     display.setCursor(5, 14);
     display.print("RADIOMETER");
 
-    // Batterie (oben rechts)
+    // Batterie (oben rechts, genug Abstand zu "RADIOMETER")
     float battVoltage = getBatteryVoltage();
     int battPercent = getBatteryPercent(battVoltage);
-    drawBattery(125, 5, battPercent, battVoltage);
+    drawBattery(145, 8, battPercent, battVoltage);
 
     display.drawLine(0, 22, 200, 22, GxEPD_BLACK);
 
@@ -397,7 +397,8 @@ void updateDisplay(ScanData current, Statistics hour, Statistics day, Statistics
     y += 22;
     display.setFont(&FreeSansBold9pt7b);
     display.setCursor(5, y);
-    if (isScanning)                                          display.print("Scanning...");
+    if (battPercent < 20)                                    display.print("LOW BATTERY");
+    else if (isScanning)                                     display.print("Scanning...");
     else if (current.wifiCount > 0 || current.bleCount > 0) display.print("RADIOACTIVE");
     else                                                     display.print("RADIO INACTIVE");
 
