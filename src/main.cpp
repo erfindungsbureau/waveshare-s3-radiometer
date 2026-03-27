@@ -435,7 +435,7 @@ void drawBattery(int x, int y, int percent, float voltage) {
   if (fillWidth > 0) display.fillRect(x + 1, y + 1, fillWidth, h - 2, GxEPD_BLACK);
   display.setFont(nullptr);
   display.setTextSize(1);
-  display.setCursor(x + w + 3, y + 2);
+  display.setCursor(x + w + 5, y + 2);
   char voltageStr[5];
   sprintf(voltageStr, "%.1fV", voltage);
   display.print(voltageStr);
