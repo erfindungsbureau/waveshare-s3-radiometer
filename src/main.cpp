@@ -225,6 +225,7 @@ float getBatteryVoltage() {
   digitalWrite(VBAT_PWR_PIN, HIGH);  // Messung aktivieren
   delay(20);
   analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);  // ~3.3V Messbereich (offizieller Waveshare-Beispielcode)
   uint32_t adcSum = 0;
   for (int i = 0; i < 10; i++) {
     adcSum += analogRead(BATT_ADC);
