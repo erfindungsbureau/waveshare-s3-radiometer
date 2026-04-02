@@ -642,78 +642,35 @@ void updateDisplay(ScanData current, Statistics hour, Statistics day, Statistics
 }
 
 // ============================================================
-// Main Setup
+// Scan + Display Update (gemeinsam für auto + manuell)
 // ============================================================
-void setup() {
-  Serial.begin(115200);
-  delay(1000);
-
-  bootCount++;
-  Serial.printf("\n=== BOOT #%d (Waveshare ESP32-S3-ePaper-1.54) ===\n", bootCount);
-
-  // GPIO Hold freigeben (war für Deep Sleep gesetzt)
-  rtc_gpio_hold_dis(GPIO_NUM_0);
-  rtc_gpio_hold_dis(GPIO_NUM_18);
-
-  // Buttons: active LOW (Pull-up, geht LOW beim Drücken) – offizielles Waveshare BSP
-  pinMode(BOOT_BTN, INPUT_PULLUP);
-  pinMode(PWR_BTN, INPUT_PULLUP);
-
-  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  bool isManualScan  = false;
-  bool playGeiger    = false;
-
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1) {
-    blinkLED();  // Sofortiges visuelles Feedback beim Button-Druck
-    // PWR_BTN (GPIO18) ist der korrekte Wakeup-Pin.
-    // BOOT_BTN (GPIO0) ist Strapping-Pin – LOW beim Aufwachen → Bootloader-Modus → nie verwenden!
-    isManualScan = true;
-    playGeiger   = true;
-    Serial.println("PWR-Taste: manueller Scan + Audio");
-  } else if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
-    Serial.println("Timer-Wakeup");
-  } else {
-    Serial.println("Erster Boot");
-  }
-
-  // Display power on + SPI mit custom Pins initialisieren
-  displayPowerOn();
-  SPI.begin(EPD_SCK, -1, EPD_MOSI, EPD_CS);
-  // Nur beim ersten Boot hard-reset (bootCount==1), danach soft-init für partial refresh ohne Flackern
-  display.init(115200, bootCount == 1, 10, false, SPI, SPISettings(4000000, MSBFIRST, SPI_MODE0));
-  delay(100);
-  Serial.println("Display initialisiert");
-
-  if (bootCount == 1) {
-    loadFromFlash();
-  }
+void runScan(bool isManualScan) {
+  bool playGeiger = isManualScan;
 
   Statistics hour = calculateStats(SCANS_PER_HOUR);
   Statistics day  = calculateStats(SCANS_PER_DAY);
   Statistics week = calculateStats(SCANS_PER_WEEK);
 
-  bool needsFullRefresh = !isManualScan && ((bootCount == 1) || (scansUntilFullRefresh <= 1));
   isScanning = true;
 
-  // Beim manuellen Scan: Scanning-Screen zeigen, dann scannen, dann Ergebnis
   if (isManualScan) {
+    blinkLED();
     showScanningScreen(0, 0, false);
   } else {
+    bool needsFullRefresh = (scansUntilFullRefresh <= 1);
     updateDisplay(lastScan, hour, day, week, needsFullRefresh);
   }
 
   ScanData currentScan = performScan();
   lastScan = currentScan;
+  isScanning = false;
 
-  // Ergebnis kurz auf Scanning-Screen zeigen bevor Übersicht kommt
   if (isManualScan) {
     showScanningScreen(currentScan.wifiCount, currentScan.bleCount, true);
     delay(3000);
   }
 
-  if (!isManualScan) {
-    addToHistory(currentScan);
-  }
+  if (!isManualScan) addToHistory(currentScan);
 
   hour = calculateStats(SCANS_PER_HOUR);
   day  = calculateStats(SCANS_PER_DAY);
@@ -727,41 +684,96 @@ void setup() {
   blinkLED();
 
   if (playGeiger) {
-    int totalDevices = currentScan.wifiCount + currentScan.bleCount;
-    playGeigerClicks(totalDevices);
+    playGeigerClicks(currentScan.wifiCount + currentScan.bleCount);
   }
 
   if (!isManualScan) {
     if (--scansUntilFullRefresh <= 0) scansUntilFullRefresh = 6;
-    if (--scansUntilFlashSave <= 0) {
-      saveToFlash();
-      scansUntilFlashSave = 12;
+    if (--scansUntilFlashSave  <= 0) { saveToFlash(); scansUntilFlashSave = 12; }
+  }
+}
+
+// ============================================================
+// Setup (einmalig beim Boot)
+// ============================================================
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  bootCount++;
+  Serial.printf("\n=== BOOT #%d (Waveshare ESP32-S3-ePaper-1.54, kein Deep Sleep) ===\n", bootCount);
+
+  pinMode(BOOT_BTN, INPUT_PULLUP);
+  pinMode(PWR_BTN,  INPUT_PULLUP);
+
+  displayPowerOn();
+  SPI.begin(EPD_SCK, -1, EPD_MOSI, EPD_CS);
+  display.init(115200, true, 10, false, SPI, SPISettings(4000000, MSBFIRST, SPI_MODE0));
+  delay(100);
+  Serial.println("Display initialisiert");
+
+  loadFromFlash();
+  runScan(false);
+}
+
+// ============================================================
+// Loop – While-Loop, kein delay, kein deep sleep
+//   • LED blinkt kurz alle 10 Sek (Heartbeat)
+//   • Button → Geiger-Sound + sofortiger Scan
+//   • Auto-Scan alle 5 Min
+// ============================================================
+void loop() {
+  const unsigned long SCAN_INTERVAL_MS  = SCAN_INTERVAL_US / 1000UL;
+  const unsigned long HEARTBEAT_MS      = 10000UL; // LED-Blitz alle 10 Sek
+  const unsigned long DEBOUNCE_MS       = 30UL;
+
+  unsigned long nextScan      = millis() + SCAN_INTERVAL_MS;
+  unsigned long nextHeartbeat = millis() + HEARTBEAT_MS;
+  bool bootBtnWasHigh = true;
+  bool pwrBtnWasHigh  = true;
+
+  while (true) {
+    unsigned long now = millis();
+
+    // ── Heartbeat-LED ────────────────────────────────────────
+    if (now >= nextHeartbeat) {
+      digitalWrite(LED_PIN, LOW);   // LED an (active LOW)
+      unsigned long t = millis();
+      while (millis() - t < 20) {} // 20 ms Blitz (busy wait, kurz genug)
+      digitalWrite(LED_PIN, HIGH);  // LED aus
+      nextHeartbeat = millis() + HEARTBEAT_MS;
+    }
+
+    // ── Button-Erkennung (active LOW, Flanke HIGH→LOW) ───────
+    bool bootNow = digitalRead(BOOT_BTN);
+    bool pwrNow  = digitalRead(PWR_BTN);
+    bool pressed = false;
+
+    if ((bootBtnWasHigh && !bootNow) || (pwrBtnWasHigh && !pwrNow)) {
+      // Entprellung
+      unsigned long t = millis();
+      while (millis() - t < DEBOUNCE_MS) {}
+      if (!digitalRead(BOOT_BTN) || !digitalRead(PWR_BTN)) {
+        pressed = true;
+      }
+    }
+    bootBtnWasHigh = bootNow;
+    pwrBtnWasHigh  = pwrNow;
+
+    if (pressed) {
+      Serial.println("Button → Geiger-Sound + manueller Scan");
+      // Geiger-Sound VOR dem Scan als sofortiges Feedback
+      playGeigerClicks(max(lastScan.wifiCount + lastScan.bleCount, 3));
+      runScan(true);
+      nextScan = millis() + SCAN_INTERVAL_MS;
+    }
+
+    // ── Auto-Scan alle 5 Min ─────────────────────────────────
+    if (millis() >= nextScan) {
+      Serial.println("Auto-Scan (5 min)");
+      runScan(false);
+      nextScan = millis() + SCAN_INTERVAL_MS;
     }
   }
-
-  // Deep Sleep (5 Minuten + Button-Wakeup)
-  Serial.println(">>> Deep Sleep <<<");
-  display.hibernate();
-  displayPowerOff();
-
-  // RTC Pull-ups aktivieren und GPIO-Zustand halten (sonst floaten Pins im Deep Sleep → kein Wakeup)
-  // Offizielles Waveshare-Beispiel verwendet GPIO0 + GPIO18 mit ANY_LOW (Wert 2)
-  rtc_gpio_pullup_en(GPIO_NUM_0);
-  rtc_gpio_pulldown_dis(GPIO_NUM_0);
-  rtc_gpio_hold_en(GPIO_NUM_0);
-  rtc_gpio_pullup_en(GPIO_NUM_18);
-  rtc_gpio_pulldown_dis(GPIO_NUM_18);
-  rtc_gpio_hold_en(GPIO_NUM_18);
-
-  uint64_t wakeupMask = (1ULL << BOOT_BTN) | (1ULL << PWR_BTN);
-  esp_sleep_enable_ext1_wakeup(wakeupMask, (esp_sleep_ext1_wakeup_mode_t)2); // ANY_LOW
-  Serial.printf("EXT1 wakeup: GPIO%d+GPIO%d mit ANY_LOW\n", BOOT_BTN, PWR_BTN);
-  Serial.flush();
-  esp_sleep_enable_timer_wakeup(SCAN_INTERVAL_US);
-  delay(100);
-  esp_deep_sleep_start();
 }
 
-void loop() {
-  // Nie erreicht wegen Deep Sleep
-}
