@@ -35,7 +35,7 @@
 #define LED_PIN   3
 
 // Audio – I2S Codec ES8311 (verifiziert aus offiziellem Waveshare-Repo)
-#define AUDIO_PWR_PIN   42   // active LOW (Verstärker-Enable)
+#define AUDIO_PWR_PIN   46   // PA enable, active HIGH (verifiziert aus Waveshare board_cfg.h)
 #define I2S_MCLK_PIN    14
 #define I2S_BCLK_PIN    15
 #define I2S_LRCLK_PIN   38
@@ -114,7 +114,7 @@ void es8311_write(uint8_t reg, uint8_t val) {
 
 bool audioInit() {
   pinMode(AUDIO_PWR_PIN, OUTPUT);
-  digitalWrite(AUDIO_PWR_PIN, LOW);  // Verstärker einschalten (active LOW)
+  digitalWrite(AUDIO_PWR_PIN, HIGH);  // PA einschalten (active HIGH, GPIO46)
   delay(50);
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
@@ -201,7 +201,7 @@ bool audioInit() {
 void audioShutdown() {
   i2s_driver_uninstall(I2S_PORT);
   Wire.end();
-  digitalWrite(AUDIO_PWR_PIN, HIGH);  // Verstärker ausschalten
+  digitalWrite(AUDIO_PWR_PIN, LOW);   // PA ausschalten
 }
 
 // Geigerzähler-Simulation: deviceCount Klicks verteilt über 5 Sekunden
