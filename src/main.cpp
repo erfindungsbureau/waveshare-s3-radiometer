@@ -34,8 +34,9 @@
 // Built-in LED (GPIO3, active LOW – Waveshare ESP32-S3-ePaper-1.54 offizielles Schematic)
 #define LED_PIN   3
 
-// Audio – I2S Codec ES8311 (verifiziert aus offiziellem Waveshare-Repo)
-#define AUDIO_PWR_PIN   46   // PA enable, active HIGH (verifiziert aus Waveshare board_cfg.h)
+// Audio – I2S Codec ES8311 (verifiziert aus offiziellem Waveshare GPIO-Tabelle)
+#define AUDIO_PWR_PIN   42   // PA EN  (I2S-Spalte, active HIGH)
+#define AUDIO_CTRL_PIN  46   // PA CTRL (I2S-Spalte, active HIGH)
 #define I2S_MCLK_PIN    14
 #define I2S_BCLK_PIN    15
 #define I2S_LRCLK_PIN   38
@@ -114,10 +115,54 @@ void es8311_write(uint8_t reg, uint8_t val) {
 
 bool audioInit() {
   pinMode(AUDIO_PWR_PIN, OUTPUT);
-  digitalWrite(AUDIO_PWR_PIN, HIGH);  // PA einschalten (active HIGH, GPIO46)
-  delay(50);
+  pinMode(AUDIO_CTRL_PIN, OUTPUT);
+  digitalWrite(AUDIO_PWR_PIN, LOW);    // PA EN (IO42) = P-MOSFET Gate, LOW = ON
+  digitalWrite(AUDIO_CTRL_PIN, HIGH);  // PA CTRL (IO46) = NS4150B enable, HIGH = ON
+  delay(100);
 
+  // ── Schritt 1: I2S zuerst starten damit MCLK läuft ──────
+  i2s_config_t i2s_cfg = {
+    .mode                 = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate          = AUDIO_SAMPLE_RATE,
+    .bits_per_sample      = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format       = I2S_CHANNEL_FMT_RIGHT_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags     = 0,
+    .dma_buf_count        = 4,
+    .dma_buf_len          = 256,
+    .use_apll             = true,
+    .tx_desc_auto_clear   = true,
+    .fixed_mclk           = 4096000,  // 256 × 16kHz
+    .mclk_multiple        = I2S_MCLK_MULTIPLE_256,
+    .bits_per_chan         = I2S_BITS_PER_CHAN_DEFAULT,
+  };
+  if (i2s_driver_install(I2S_PORT, &i2s_cfg, 0, NULL) != ESP_OK) {
+    Serial.println("I2S: Driver install fehlgeschlagen");
+    return false;
+  }
+  i2s_pin_config_t pin_cfg = {
+    .mck_io_num   = I2S_MCLK_PIN,
+    .bck_io_num   = I2S_BCLK_PIN,
+    .ws_io_num    = I2S_LRCLK_PIN,
+    .data_out_num = I2S_DOUT_PIN,
+    .data_in_num  = I2S_PIN_NO_CHANGE,
+  };
+  if (i2s_set_pin(I2S_PORT, &pin_cfg) != ESP_OK) {
+    Serial.println("I2S: Pin config fehlgeschlagen");
+    i2s_driver_uninstall(I2S_PORT);
+    return false;
+  }
+  delay(50);  // MCLK stabilisieren
+
+  // ── Schritt 2: I2C Scan ──────────────────────────────────
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Serial.println("I2C Scan...");
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0)
+      Serial.printf("  I2C Gerät gefunden: 0x%02X\n", addr);
+  }
+  Serial.println("I2C Scan fertig");
 
   // ES8311 Init-Sequenz (DAC-only, verifiziert aus Waveshare Beispielcode)
   es8311_write(0x44, 0x08);  // noise gate off (2× für zuverlässigen ersten Boot)
@@ -161,47 +206,14 @@ bool audioInit() {
   es8311_write(0x17, 0xBF);
   es8311_write(0x32, 0xBF);  // DAC-Lautstärke ~75 %
   delay(20);
-
-  // I2S-Treiber (legacy driver/i2s.h API – verfügbar im verwendeten Framework)
-  i2s_config_t i2s_cfg = {
-    .mode                 = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-    .sample_rate          = AUDIO_SAMPLE_RATE,
-    .bits_per_sample      = I2S_BITS_PER_SAMPLE_16BIT,
-    .channel_format       = I2S_CHANNEL_FMT_RIGHT_LEFT,
-    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-    .intr_alloc_flags     = 0,
-    .dma_buf_count        = 4,
-    .dma_buf_len          = 256,
-    .use_apll             = false,
-    .tx_desc_auto_clear   = true,
-    .fixed_mclk           = 0,
-    .mclk_multiple        = I2S_MCLK_MULTIPLE_256,
-    .bits_per_chan         = I2S_BITS_PER_CHAN_DEFAULT,
-  };
-  if (i2s_driver_install(I2S_PORT, &i2s_cfg, 0, NULL) != ESP_OK) {
-    Serial.println("I2S: Driver install fehlgeschlagen");
-    return false;
-  }
-
-  i2s_pin_config_t pin_cfg = {
-    .mck_io_num   = I2S_MCLK_PIN,
-    .bck_io_num   = I2S_BCLK_PIN,
-    .ws_io_num    = I2S_LRCLK_PIN,
-    .data_out_num = I2S_DOUT_PIN,
-    .data_in_num  = I2S_PIN_NO_CHANGE,
-  };
-  if (i2s_set_pin(I2S_PORT, &pin_cfg) != ESP_OK) {
-    Serial.println("I2S: Pin config fehlgeschlagen");
-    i2s_driver_uninstall(I2S_PORT);
-    return false;
-  }
   return true;
 }
 
 void audioShutdown() {
   i2s_driver_uninstall(I2S_PORT);
   Wire.end();
-  digitalWrite(AUDIO_PWR_PIN, LOW);   // PA ausschalten
+  digitalWrite(AUDIO_PWR_PIN, HIGH);   // P-MOSFET OFF
+  digitalWrite(AUDIO_CTRL_PIN, LOW);   // NS4150B disable
 }
 
 // Geigerzähler-Simulation: deviceCount Klicks verteilt über 5 Sekunden
@@ -697,7 +709,8 @@ void runScan(bool isManualScan) {
 // Setup (einmalig beim Boot)
 // ============================================================
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(115200);           // USB CDC
+  Serial1.begin(115200, SERIAL_8N1, 44, 43); // Hardware UART: RX=IO44, TX=IO43
   delay(1000);
 
   bootCount++;
